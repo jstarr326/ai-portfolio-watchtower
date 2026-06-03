@@ -5,6 +5,17 @@ from openai import OpenAI
 
 from ai_portfolio_watchtower.models import HoldingSnapshot, PortfolioEvent
 
+WEEKLY_BRIEF_SECTIONS = [
+    "Executive readout",
+    "Fresh portfolio decisions this period",
+    "Historical decisions mentioned this period",
+    "Watchlist candidates, not buy recommendations",
+    "Current inferred holdings",
+    "Recurring themes",
+    "Risks and missing context",
+    "No-action notes",
+]
+
 
 class WeeklyAnalyst:
     def __init__(self, api_key: str, model: str) -> None:
@@ -31,7 +42,9 @@ class WeeklyAnalyst:
                         "context matter. Be direct when there were no fresh buy/add signals. "
                         "Separate decisions first reported during the period from older decisions "
                         "that were merely mentioned again in performance commentary. Avoid phrases "
-                        "like 'warranted' or 'should buy'; use neutral research language."
+                        "like 'warranted' or 'should buy'; use neutral research language. Return "
+                        "Slack mrkdwn only: each section heading should be bold, and every "
+                        "substantive point should be a hyphen bullet. Avoid long paragraphs."
                     ),
                 },
                 {
@@ -60,7 +73,59 @@ class WeeklyAnalyst:
                 },
             ],
         )
-        return response.choices[0].message.content or "No weekly brief generated."
+        return format_weekly_brief(response.choices[0].message.content or "No weekly brief generated.")
+
+
+def format_weekly_brief(markdown: str) -> str:
+    lines: list[str] = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        section_name, section_body = _split_section_line(line)
+        if section_name:
+            _append_blank_before_section(lines)
+            lines.append(f"*{section_name}*")
+            if section_body:
+                lines.append(_as_bullet(section_body))
+            continue
+
+        if _is_bold_heading(line):
+            _append_blank_before_section(lines)
+            lines.append(line)
+            continue
+
+        lines.append(_as_bullet(line))
+
+    return "\n".join(lines).strip()
+
+
+def _split_section_line(line: str) -> tuple[str | None, str]:
+    normalized = line.strip("*").strip()
+    for section in WEEKLY_BRIEF_SECTIONS:
+        if normalized.lower() == section.lower():
+            return section, ""
+        prefix = f"{section}:"
+        if normalized.lower().startswith(prefix.lower()):
+            return section, normalized[len(prefix) :].strip()
+    if normalized.endswith(":") and len(normalized) < 80:
+        return normalized[:-1].strip(), ""
+    return None, ""
+
+
+def _append_blank_before_section(lines: list[str]) -> None:
+    if lines and lines[-1] != "":
+        lines.append("")
+
+
+def _is_bold_heading(line: str) -> bool:
+    return line.startswith("*") and line.endswith("*") and not line.startswith("* ")
+
+
+def _as_bullet(line: str) -> str:
+    cleaned = line.lstrip("-*• ").strip()
+    return f"- {cleaned}"
 
 
 def _event_payload(event: PortfolioEvent) -> dict:
